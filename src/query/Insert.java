@@ -55,7 +55,7 @@ class Insert implements Plan {
         }
 
         // print the output message
-        System.out.println("1 rows affected.");
+        System.out.println("1 rows inserted.");
 
     } // public void execute()
 
