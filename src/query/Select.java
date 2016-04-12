@@ -74,6 +74,7 @@ class Select implements Plan {
     }
 
     private class TableInfo {
+        HeapFile origin;
         HeapFile hf;
         Schema schema;
         FileScan scan;
@@ -81,9 +82,14 @@ class Select implements Plan {
 
         TableInfo (Schema schema, HeapFile hf) {
             this.schema = schema;
-            this.hf = hf;
+            this.origin = hf;
+            this.hf = new HeapFile(null);
             this.scan = new FileScan(schema, hf);
-            this.recCount = hf.getRecCnt();
+            this.recCount = origin.getRecCnt();
+        }
+
+        int containCol (String col) {
+            return schema.fieldNumber(col);
         }
 
     }
@@ -101,6 +107,11 @@ class Select implements Plan {
         }
 
         //Pushing Selections:
+        for (Predicate[] pred : preds) {
+            for (Predicate pd : pred) {
+
+            }
+        }
 
         //Join Ordering:
 
