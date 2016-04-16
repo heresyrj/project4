@@ -1,12 +1,11 @@
 package query;
 
+import global.AttrType;
 import global.Minibase;
 import global.SortKey;
 import heap.HeapFile;
 import parser.AST_Select;
-import relop.FileScan;
-import relop.Predicate;
-import relop.Schema;
+import relop.*;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -18,7 +17,7 @@ import java.util.HashMap;
 class Select implements Plan {
 
     /**
-     * SELECT sid, name, points
+     * (EXPLAIN) SELECT sid, name, points
      * FROM Students, Grades
      * WHERE sid = gsid AND points >= 3.0 OR sid = gsid AND points <= 2.5;
      * */
@@ -28,13 +27,14 @@ class Select implements Plan {
      * need to do in execute() is call iter.explain() or iter.execute())
      */
 
-    private boolean isDistinct;
     private boolean isExplain;
-    private String[] tables;
     private SortKey[] orders; //ascending or descending order for given field
-    private Predicate[][] preds;
-    private String[] columns;
     private boolean kleenestar = false;
+    private String[] tables;
+    private Predicate[][] preds;
+    private String[] projCols;
+    private HashMap<String, String> col2Table;
+    private Schema tempSchema;
 
     /**
      * Optimizes the plan, given the parsed query.
@@ -42,40 +42,38 @@ class Select implements Plan {
      * @throws QueryException if validation fails
      */
     public Select(AST_Select tree) throws QueryException {
-        isDistinct = tree.isDistinct;
         isExplain = tree.isExplain;
         tables = tree.getTables();
-        columns = tree.getColumns();
+        projCols = tree.getColumns();
+        if(projCols.length == 0) kleenestar = true;
+        preds = tree.getPredicates();
         try {
-            validate();
+            for (String t: tables){
+                QueryCheck.tableExists(t);
+            }
+            if (tables.length > 1) {
+                joinSchema(tables);
+            }
+            validateProjCols();
+            QueryCheck.predicates(tempSchema, preds);
+
         } catch (QueryException e) {
             throw e;
         }
-        if(columns.length == 0) kleenestar = true;
-        orders = tree.getOrders();
-        preds = tree.getPredicates();
     } // public Select(AST_Select tree) throws QueryException
 
-    private void validate() throws QueryException {
-
-        ArrayList<String> colNames = new ArrayList<String>();
-        Schema schema;
-        for (String table : tables) {
-            schema = QueryCheck.tableExists(table);
-            for (int j = 0; j < schema.getCount(); j++) {
-                colNames.add(schema.fieldName(j));
+    private void joinSchema(String[] tables){
+        try {
+            tempSchema = Schema.join(QueryCheck.tableExists(tables[0]), QueryCheck.tableExists(tables[1]));
+            for (int i = 2; i < tables.length; i++){
+                tempSchema = Schema.join(tempSchema, QueryCheck.tableExists(tables[i]));
             }
-        }
-
-        for (String column : columns) {
-            if (!colNames.contains(column)) throw new QueryException("No Col Match");
-        }
-
+        } catch (QueryException e) {}
     }
 
     private class TableInfo {
         HeapFile origin;
-        HeapFile hf;
+        HeapFile newhf;
         Schema schema;
         FileScan scan;
         int recCount;
@@ -83,7 +81,7 @@ class Select implements Plan {
         TableInfo (Schema schema, HeapFile hf) {
             this.schema = schema;
             this.origin = hf;
-            this.hf = new HeapFile(null);
+            this.newhf = new HeapFile(null);
             this.scan = new FileScan(schema, hf);
             this.recCount = origin.getRecCnt();
         }
@@ -92,8 +90,35 @@ class Select implements Plan {
             return schema.fieldNumber(col);
         }
 
+
+        void pushSelection(Predicate pd) {
+            Tuple tuple;
+            while(scan.hasNext()) {
+                tuple = scan.getNext();
+                if(pd.evaluate(tuple)) {
+                    newhf.insertRecord(tuple.getData());
+                }
+            }
+        }
+
     }
 
+    private String pushable(Predicate p) {
+        String left = (String) p.getLeft();
+        String leftTable = col2Table.get(left);
+
+        if(p.getRtype() != AttrType.COLNAME) return leftTable;
+
+        String right = (String) p.getRight();
+        String rightTable = col2Table.get(right);
+
+        if (leftTable.equals(rightTable)){
+            return leftTable;
+        }
+        else
+            return null;
+
+    }
 
     /**
      * Executes the plan and prints applicable output.
@@ -106,15 +131,20 @@ class Select implements Plan {
             info.put(table, tableInfo);
         }
 
+        TableInfo tinfo;
+        String tableName;
+        ArrayList<Predicate> newPreds;
         //Pushing Selections:
-        for (Predicate[] pred : preds) {
-            for (Predicate pd : pred) {
+        for(Predicate[] pred : preds){ //connected by OR
+            for (Predicate p: pred){
+                if(pushable(p) != null) {
 
+                }
             }
+            //update
         }
 
         //Join Ordering:
-
 
 
 
@@ -122,5 +152,25 @@ class Select implements Plan {
         System.out.println("0 rows affected. (Not implemented)");
 
     } // public void execute()
+
+    private void validateProjCols() throws QueryException {
+
+        col2Table = new HashMap<String, String>();
+        ArrayList<String> colNames = new ArrayList<String>();
+        Schema schema;
+        for (String table : tables) {
+            schema = QueryCheck.tableExists(table);
+            for (int j = 0; j < schema.getCount(); j++) {
+                String thisCol = schema.fieldName(j);
+                colNames.add(thisCol);
+                col2Table.put(thisCol, table);
+            }
+        }
+
+        for (String column : projCols) {
+            if (!colNames.contains(column)) throw new QueryException("No Col Match");
+        }
+
+    }
 
 } // class Select implements Plan

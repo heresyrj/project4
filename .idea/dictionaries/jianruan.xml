@@ -2,6 +2,7 @@
   <dictionary name="jianruan">
     <words>
       <w>kleenestar</w>
+      <w>pred</w>
     </words>
   </dictionary>
 </component>
