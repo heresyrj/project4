@@ -2,7 +2,10 @@
   <dictionary name="jianruan">
     <words>
       <w>kleenestar</w>
+      <w>notpush</w>
       <w>pred</w>
+      <w>preprocessing</w>
+      <w>tinfo</w>
     </words>
   </dictionary>
 </component>

@@ -34,7 +34,46 @@ class Select implements Plan {
     private Predicate[][] preds;
     private String[] projCols;
     private HashMap<String, String> col2Table;
+    private HashMap<String, TableInfo> info;
+    ArrayList<ArrayList<Predicate>> unPushablePreds;
+    ArrayList<ArrayList<Predicate>> pushablePreds;
     private Schema tempSchema;
+
+    private class TableInfo {
+        String name;
+        HeapFile origin, updated, temp;
+        Schema schema;
+        FileScan scan;
+
+        TableInfo (String name, Schema schema, HeapFile hf) {
+            this.name = name;
+            this.schema = schema;
+            this.origin = hf;
+            this.updated = hf;
+            this.temp = new HeapFile(null);
+            this.scan = new FileScan(schema, hf);
+        }
+
+        int getCount () {
+            return updated.getRecCnt();
+        }
+
+        FileScan getScan() {
+            return new FileScan(schema, updated);
+        }
+
+        void pushSelection(Selection sel) {
+            Tuple tuple;
+            while(sel.hasNext()) {
+                tuple = sel.getNext();
+                temp.insertRecord(tuple.getData());
+            }
+            //update
+            updated = temp;
+            temp = new HeapFile(null);
+        }
+
+    }
 
     /**
      * Optimizes the plan, given the parsed query.
@@ -60,6 +99,8 @@ class Select implements Plan {
         } catch (QueryException e) {
             throw e;
         }
+        preprocessing();
+
     } // public Select(AST_Select tree) throws QueryException
 
     private void joinSchema(String[] tables){
@@ -70,88 +111,6 @@ class Select implements Plan {
             }
         } catch (QueryException e) {}
     }
-
-    private class TableInfo {
-        HeapFile origin;
-        HeapFile newhf;
-        Schema schema;
-        FileScan scan;
-        int recCount;
-
-        TableInfo (Schema schema, HeapFile hf) {
-            this.schema = schema;
-            this.origin = hf;
-            this.newhf = new HeapFile(null);
-            this.scan = new FileScan(schema, hf);
-            this.recCount = origin.getRecCnt();
-        }
-
-        int containCol (String col) {
-            return schema.fieldNumber(col);
-        }
-
-
-        void pushSelection(Predicate pd) {
-            Tuple tuple;
-            while(scan.hasNext()) {
-                tuple = scan.getNext();
-                if(pd.evaluate(tuple)) {
-                    newhf.insertRecord(tuple.getData());
-                }
-            }
-        }
-
-    }
-
-    private String pushable(Predicate p) {
-        String left = (String) p.getLeft();
-        String leftTable = col2Table.get(left);
-
-        if(p.getRtype() != AttrType.COLNAME) return leftTable;
-
-        String right = (String) p.getRight();
-        String rightTable = col2Table.get(right);
-
-        if (leftTable.equals(rightTable)){
-            return leftTable;
-        }
-        else
-            return null;
-
-    }
-
-    /**
-     * Executes the plan and prints applicable output.
-     */
-    public void execute() {
-        TableInfo tableInfo;
-        HashMap<String, TableInfo> info = new HashMap<String, TableInfo>();
-        for(String table : tables) {
-            tableInfo = new TableInfo(Minibase.SystemCatalog.getSchema(table) , new HeapFile(table));
-            info.put(table, tableInfo);
-        }
-
-        TableInfo tinfo;
-        String tableName;
-        ArrayList<Predicate> newPreds;
-        //Pushing Selections:
-        for(Predicate[] pred : preds){ //connected by OR
-            for (Predicate p: pred){
-                if(pushable(p) != null) {
-
-                }
-            }
-            //update
-        }
-
-        //Join Ordering:
-
-
-
-        // print the output message
-        System.out.println("0 rows affected. (Not implemented)");
-
-    } // public void execute()
 
     private void validateProjCols() throws QueryException {
 
@@ -172,5 +131,122 @@ class Select implements Plan {
         }
 
     }
+
+    private boolean pushableForATable(Predicate p, String name) {
+        String left = (String) p.getLeft();
+        String leftTable = col2Table.get(left);
+
+        if(p.getRtype() != AttrType.COLNAME && leftTable.equals(name)) return true;
+
+        String right = (String) p.getRight();
+        String rightTable = col2Table.get(right);
+
+        if (leftTable.equals(rightTable) && leftTable.equals(name)){
+            return true;
+        }
+        else
+            return false;
+
+    }
+
+    private void preprocessing() {
+
+        TableInfo tableInfo;
+        info = new HashMap<String, TableInfo>();
+        for(String table : tables) {
+            tableInfo = new TableInfo(table, Minibase.SystemCatalog.getSchema(table) , new HeapFile(table));
+            info.put(table, tableInfo);
+        }
+
+        predsAnalysis();
+    }
+
+    private void predsAnalysis() {
+        unPushablePreds = new ArrayList<ArrayList<Predicate>>();
+        pushablePreds = new ArrayList<ArrayList<Predicate>>();
+        ArrayList<Predicate> push, notpush;
+
+        boolean pushed = false;
+        //determine if a Predicate[] involves only 1 table
+        for (Predicate[] pred : preds) {
+            push = new ArrayList<Predicate>();
+            notpush = new ArrayList<Predicate>();
+
+            for(Predicate p : pred) {
+                //for each predicate, if find any table pushable for it.
+                for(String t : tables) {
+                    if(pushableForATable(p,t)) {
+                        push.add(p);
+                        pushed = true;
+                        break;
+                    }
+                }
+                //if no table found. add to notpush
+                if(!pushed) notpush.add(p);
+            }
+
+            pushablePreds.add(push);
+            unPushablePreds.add(notpush);
+        }
+
+    }
+
+    private void pushingSelection() {
+        //In each ArrayList<Predicate>, predicates are connected by OR
+        //find longest Predicate[] for tables and do pushing selection
+        ArrayList<Predicate> p4atable;
+        TableInfo tinfo;
+        Selection sel;
+
+        for (ArrayList<Predicate> push : pushablePreds) {
+            while(push.size() != 0) {
+                for(String table : tables) {
+                    p4atable = new ArrayList<Predicate>();
+                    //this for loop find the longest OR chain predicates for current table
+                    for(Predicate p : push) {
+                        if(pushableForATable(p, table)) {
+                            p4atable.add(p);
+                            push.remove(p);
+                        }
+                    }
+                    //if any predicates found for this table, pushing selection
+                    if(p4atable.size() != 0) {
+                        tinfo = info.get(table);
+                        sel = new Selection(tinfo.scan, (Predicate[])p4atable.toArray());
+                        tinfo.pushSelection(sel);
+                    }
+
+                }
+            }
+        }
+
+    }
+
+
+    /**
+     * Executes the plan and prints applicable output.
+     */
+    public void execute() {
+
+        //Pushing Selections:
+        pushingSelection();
+
+        //Join Ordering:
+        HashMap<Integer, FileScan> size2table = new HashMap<Integer, FileScan>();
+        for (TableInfo t : info.values()) {
+            size2table.put(t.getCount(), t.getScan());
+        }
+        //sort by size
+        Integer[] sortedSize = (Integer[]) size2table.keySet().toArray();
+
+        //SimpleJoin sj = new SimpleJoin(size2table.get(sortedSize[0]), size2table.get(sortedSize[1]), );
+
+
+        // print the output message
+        System.out.println("0 rows affected. (Not implemented)");
+
+    } // public void execute()
+
+
 
 } // class Select implements Plan
