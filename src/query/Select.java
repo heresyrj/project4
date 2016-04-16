@@ -8,6 +8,7 @@ import parser.AST_Select;
 import relop.*;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 
 
@@ -35,6 +36,7 @@ class Select implements Plan {
     private String[] projCols;
     private HashMap<String, String> col2Table;
     private HashMap<String, TableInfo> info;
+    private ArrayList<String> joinedTables;
     ArrayList<ArrayList<Predicate>> unPushablePreds;
     ArrayList<ArrayList<Predicate>> pushablePreds;
     private Schema tempSchema;
@@ -222,6 +224,88 @@ class Select implements Plan {
 
     }
 
+    private boolean joinable(TableInfo left, TableInfo right, Predicate p){
+        String leftName = (String) p.getLeft();
+        String leftTable = col2Table.get(leftName);
+        String rightName = (String) p.getRight();
+        String rightTable = col2Table.get(rightName);
+
+        if (left == null){
+            if (joinedTables.contains(leftTable) && right.name.equals(rightTable)){
+                    return true;
+            }
+            if (joinedTables.contains(rightTable) && right.name.equals(leftTable)){
+                    return true;
+            }
+        }
+
+        if (leftTable.equals(left.name) && rightTable.equals(right.name)){
+            return true;
+        }
+        if (leftTable.equals(right.name) && rightTable.equals(left.name)){
+            return true;
+        }
+        return false;
+    }
+
+
+
+    private SimpleJoin joinTwoTables(TableInfo left, TableInfo right, SimpleJoin sj){
+        Predicate[] pass;
+        ArrayList<Predicate> joinOR;
+
+        for (ArrayList<Predicate> pred: unPushablePreds){
+            joinOR = new ArrayList<Predicate>();
+            for (Predicate p: pred){
+                if (joinable(left, right, p)){
+                    joinOR.add(p);
+                    pred.remove(p);
+                }
+            }
+
+            if (joinOR.size() != 0){
+                pass = (Predicate[]) joinOR.toArray();
+                if (left == null){
+                    sj = new SimpleJoin(sj, right.getScan(), pass);
+                }
+                else {
+                    sj = new SimpleJoin(left.getScan(), right.getScan(), pass);
+                }
+            }
+        }
+        return sj;
+    }
+
+    private SimpleJoin joinOrdering(){
+        HashMap<Integer, TableInfo> size2table = new HashMap<Integer, TableInfo>();
+        for (TableInfo t : info.values()) {
+            size2table.put(t.getCount(), t);
+        }
+        //sort by size
+        Integer[] sortedSize = (Integer[]) size2table.keySet().toArray();
+        Arrays.sort(sortedSize);
+
+        TableInfo leftTInfo = size2table.get(sortedSize[0]);
+        TableInfo rightTInfo = size2table.get(sortedSize[1]);
+
+        SimpleJoin sj = joinTwoTables(leftTInfo, rightTInfo, null);
+
+        size2table.remove(sortedSize[0]);
+        size2table.remove(sortedSize[1]);
+        joinedTables.add(leftTInfo.name);
+        joinedTables.add(rightTInfo.name);
+
+        int counter = 2;
+        while (size2table.size() != 0){
+            rightTInfo = size2table.get(sortedSize[counter]);
+            counter++;
+            sj = joinTwoTables(null, rightTInfo, sj);
+            joinedTables.add(rightTInfo.name);
+        }
+        return sj;
+
+    }
+
 
     /**
      * Executes the plan and prints applicable output.
@@ -231,16 +315,27 @@ class Select implements Plan {
         //Pushing Selections:
         pushingSelection();
 
-        //Join Ordering:
-        HashMap<Integer, FileScan> size2table = new HashMap<Integer, FileScan>();
-        for (TableInfo t : info.values()) {
-            size2table.put(t.getCount(), t.getScan());
+        Selection finalSel;
+        Iterator sj;
+        if (tables.length > 1) {
+            sj = joinOrdering();
+        } else {
+            sj = info.get(tables[0]).getScan();
         }
-        //sort by size
-        Integer[] sortedSize = (Integer[]) size2table.keySet().toArray();
 
-        //SimpleJoin sj = new SimpleJoin(size2table.get(sortedSize[0]), size2table.get(sortedSize[1]), );
+        finalSel = new Selection(sj, preds[0]);
+        for (Predicate[] pred : preds) {
+            if(pred.equals(preds[0])) continue;
+            finalSel = new Selection(finalSel, pred);
+        }
 
+        Integer[] pCols = new Integer[projCols.length];
+        for (int i = 0; i < projCols.length; i++){
+            pCols[i] = Integer.parseInt(projCols[i]);
+        }
+        Projection proj = new Projection(finalSel, pCols);
+
+        proj.execute();
 
         // print the output message
         System.out.println("0 rows affected. (Not implemented)");
