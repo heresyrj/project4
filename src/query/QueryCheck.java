@@ -55,6 +55,8 @@ class QueryCheck {
 
     } // public static void indexExists(String indexName) throws QueryException
 
+
+
     /**
      * Checks whether a column exists.
      *

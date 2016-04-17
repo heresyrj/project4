@@ -20,7 +20,6 @@ class DropIndex implements Plan {
         // make sure the table exists
         fileName = tree.getFileName();
         try {
-            fileName = tree.getFileName();
             QueryCheck.indexExists(fileName);
         } catch (QueryException exc) {
             throw new QueryException(exc.getMessage());
