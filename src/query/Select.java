@@ -2,15 +2,12 @@ package query;
 
 import global.AttrType;
 import global.Minibase;
-import global.RID;
-import global.SortKey;
 import heap.HeapFile;
 import parser.AST_Select;
 import relop.*;
+import relop.Iterator;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
+import java.util.*;
 
 
 /**
@@ -29,59 +26,33 @@ class Select implements Plan {
      * need to do in execute() is call iter.explain() or iter.execute())
      */
 
-    private boolean isExplain;
-    private SortKey[] orders; //ascending or descending order for given field
-    private boolean kleenestar = false;
     private String[] tables;
     private Predicate[][] preds;
     private String[] projCols;
-    private HashMap<String, String> col2Table;
-    private HashMap<String, TableInfo> info;
-    private ArrayList<String> joinedTables;
-    ArrayList<ArrayList<Predicate>> unPushablePreds;
-    ArrayList<ArrayList<Predicate>> pushablePreds;
     private Schema tempSchema;
+    private Iterator[] scans;
+    private HashMap<String, Integer> joinMap;
+    private ArrayList<Predicate> joinPreds;
+    private ArrayList<Iterator> closescan;
+    private boolean isExplain;
+    private ArrayList<Predicate[]> genSelection;
+    ArrayList<Integer> availtables;
 
-    private class TableInfo {
-        String name;
-        HeapFile origin, updated, temp;
-        Schema schema;
-        FileScan scan;
+    private class Pair{
 
-        TableInfo (String name, Schema schema, HeapFile hf) {
-            this.name = name;
-            this.schema = schema;
-            this.origin = hf;
-            this.updated = hf;
-//            this.temp = new HeapFile(null);
-            this.scan = new FileScan(schema, hf);
+        int product, t1, t2;
+        Predicate p;
+
+        Pair (int product, Predicate p, int t1, int t2){
+            this.product = product;
+            this.p = p;
+            this.t1 = t1;
+            this.t2 = t2;
         }
 
-        int getCount () {
-            return updated.getRecCnt();
-        }
-
-        FileScan getScan() {
-            return new FileScan(schema, updated);
-        }
-
-        void pushSelection(Selection sel) {
-
-            temp = new HeapFile(null);
-//            int tempCount = temp.getRecCnt();
-            Tuple tuple;
-            while(sel.hasNext()) {
-                tuple = sel.getNext();
-                temp.insertRecord(tuple.getData());
-            }
-            //update
-            updated = temp;
-//            temp = new HeapFile(null);
-//            tempCount = temp.getRecCnt();
-//            int updateCount = updated.getRecCnt();
-        }
 
     }
+
 
     /**
      * Optimizes the plan, given the parsed query.
@@ -92,9 +63,14 @@ class Select implements Plan {
         isExplain = tree.isExplain;
         tables = tree.getTables();
         projCols = tree.getColumns();
-        if(projCols.length == 0) kleenestar = true;
         preds = tree.getPredicates();
-        joinedTables = new ArrayList<String>();
+        scans = new Iterator[tables.length];
+        joinMap = new HashMap<String, Integer>();
+        joinPreds = new ArrayList<Predicate>();
+        closescan = new ArrayList<Iterator>();
+        genSelection = new ArrayList<Predicate[]>();
+        availtables = new ArrayList<Integer>();
+
         try {
             for (String t: tables){
                 QueryCheck.tableExists(t);
@@ -102,13 +78,20 @@ class Select implements Plan {
             if (tables.length > 1) {
                 joinSchema(tables);
                 QueryCheck.predicates(tempSchema, preds);
+                QueryCheck.updateFields(tempSchema, projCols);
             }
-            validateProjCols();
+            else{
+                Schema schema = Minibase.SystemCatalog.getSchema(tables[0]);
+                QueryCheck.updateFields(schema, projCols);
+            }
+
+            for (int i = 0; i < tables.length; i++){
+                availtables.add(i);
+            }
 
         } catch (QueryException e) {
             throw e;
         }
-        preprocessing();
 
     } // public Select(AST_Select tree) throws QueryException
 
@@ -121,300 +104,219 @@ class Select implements Plan {
         } catch (QueryException e) {}
     }
 
-    private void validateProjCols() throws QueryException {
-
-        col2Table = new HashMap<String, String>();
-        ArrayList<String> colNames = new ArrayList<String>();
+    private void pushingSelection(){
+        boolean flag, gen, join;
         Schema schema;
-        for (String table : tables) {
-            schema = QueryCheck.tableExists(table);
-            for (int j = 0; j < schema.getCount(); j++) {
-                String thisCol = schema.fieldName(j);
-                colNames.add(thisCol);
-                col2Table.put(thisCol, table);
-            }
-        }
-
-        for (String column : projCols) {
-            if (!colNames.contains(column)) throw new QueryException("No Col Match");
-        }
-
-    }
-
-    private boolean pushableForATable(Predicate p, String name) {
-        String left = (String) p.getLeft();
-        String leftTable = col2Table.get(left);
-
-        if(p.getRtype() != AttrType.COLNAME ) {
-            if (leftTable.equals(name)){
-                return true;
-            }
-            return false;
-        }
-
-        String right = (String) p.getRight();
-        String rightTable = col2Table.get(right);
-
-        if (leftTable.equals(rightTable) && leftTable.equals(name)){
-            return true;
-        }
-        else
-            return false;
-
-    }
-
-    private void preprocessing() {
-
-        TableInfo tableInfo;
-        info = new HashMap<String, TableInfo>();
-        for(String table : tables) {
-            tableInfo = new TableInfo(table, Minibase.SystemCatalog.getSchema(table) , new HeapFile(table));
-            info.put(table, tableInfo);
-        }
-
-        predsAnalysis();
-    }
-
-    private void predsAnalysis() {
-        unPushablePreds = new ArrayList<ArrayList<Predicate>>();
-        pushablePreds = new ArrayList<ArrayList<Predicate>>();
-        ArrayList<Predicate> push, notpush;
-
-        boolean pushed = false;
-        //determine if a Predicate[] involves only 1 table
-        for (Predicate[] pred : preds) {
-            push = new ArrayList<Predicate>();
-            notpush = new ArrayList<Predicate>();
-
-            for(Predicate p : pred) {
-                //for each predicate, if find any table pushable for it.
-                for(String t : tables) {
-                    if(pushableForATable(p,t)) {
-                        push.add(p);
-                        pushed = true;
-                        break;
-                    }
+        HeapFile hf;
+        for (int i = 0; i < preds.length; i++){
+            gen = true;
+            for (int k = 0; k < tables.length; k++){
+                flag = true;
+                schema = Minibase.SystemCatalog.getSchema(tables[k]);
+                hf = new HeapFile(tables[k]);
+                scans[k] = new FileScan(schema, hf);
+                closescan.add(scans[k]);
+                // map from field name to table index
+                for (int m = 0; m < schema.getCount(); m++){
+                    joinMap.put(schema.fieldName(m), k);
                 }
-                //if no table found. add to notpush
-                if(!pushed) notpush.add(p);
-            }
-
-            if (push.size() != 0) {
-                pushablePreds.add(push);
-            }
-            if (notpush.size() != 0) {
-                unPushablePreds.add(notpush);
-            }
-        }
-
-    }
-
-    private void pushingSelection() {
-        //In each ArrayList<Predicate>, predicates are connected by OR
-        //find longest Predicate[] for tables and do pushing selection
-        ArrayList<Predicate> p4atable;
-        TableInfo tinfo;
-        Selection sel;
-
-
-        for (ArrayList<Predicate> push : pushablePreds) {
-            while(push.size() != 0) {
-                for(String table : tables) {
-                    p4atable = new ArrayList<Predicate>();
-                    //this for loop find the longest OR chain predicates for current table
-
-                    for(Predicate p : push) {
-                        if(pushableForATable(p, table)) {
-                            p4atable.add(p);
-                            //push.remove(p); taken care in next if loop. concurrent issue otherwise.
-                        }
-                    }
-                    if (p4atable.size() != 0){
-                        for (Predicate p: p4atable){
-                            push.remove(p);
-                        }
-                    }
-                    //if any predicates found for this table, pushing selection
-                    if(p4atable.size() != 0) {
-                        tinfo = info.get(table);
-//                        Predicate[] pass = p4atable.toArray(new Predicate[p4atable.size()]);
-                        Predicate[] pass = new Predicate[p4atable.size()];
-                        Predicate p, copyfrom;
-                        for (int i = 0; i < p4atable.size(); i++){
-                            copyfrom = p4atable.get(i);
-                            p = new Predicate(copyfrom.getOper(), copyfrom.getLtype(), copyfrom.getLeft(), copyfrom.getRtype(), copyfrom.getRight());
-                            pass[i] = p;
-                        }
-                        sel = new Selection(tinfo.scan, pass);
-                        tinfo.pushSelection(sel);
-                        int i = 0;
+                for (int j = 0; j < preds[i].length; j++){
+                    // used later for join ordering
+                    if (preds[i][j].getLtype() == AttrType.COLNAME && preds[i][j].getRtype() ==AttrType.COLNAME){
+                        joinPreds.add(preds[i][j]);
+                        join = false;
                     }
 
+                    if (!preds[i][j].validate(schema)){
+                        flag = false;
+                    }
+                }
+                if (flag){
+                    scans[k] = new Selection(scans[k], preds[i]);
+                    gen = false;
+                    break;
                 }
             }
-        }
-
-
-//        fixDup();
-
-    }
-
-    private void fixDup(){
-        TableInfo t;
-        String name;
-        HeapFile temp;
-        RID rid;
-        FileScan scan;
-        ArrayList<RID> rids;
-        for (String s:tables){
-            rids = new ArrayList<RID>();
-            t = info.get(s);
-            name = t.name;
-            scan = t.getScan();
-            temp = new HeapFile(null);
-            Tuple tuple;
-            while(scan.hasNext()){
-                tuple = scan.getNext();
-                rid = scan.getLastRID();
-                if (! rids.contains(rid)) {
-                    temp.insertRecord(tuple.getData());
-                    rids.add(rid);
+            if (gen){
+                join = true;
+                for (int j = 0; j < preds[i].length; j++) {
+                    if (preds[i][j].getLtype() == AttrType.COLNAME && preds[i][j].getRtype() ==AttrType.COLNAME){
+                        join = false;
+                    }
                 }
-            }
-            int c = t.updated.getRecCnt();
-            c = temp.getRecCnt();
-            t.updated = temp;
-            c = t.updated.getRecCnt();
-        }
-
-    }
-
-    private boolean joinable(TableInfo left, TableInfo right, Predicate p){
-        String leftName = (String) p.getLeft();
-        String leftTable = col2Table.get(leftName);
-        String rightName = (String) p.getRight();
-        String rightTable = col2Table.get(rightName);
-
-        if (left == null){
-            if (joinedTables.contains(leftTable) && right.name.equals(rightTable)){
-                    return true;
-            }
-            if (joinedTables.contains(rightTable) && right.name.equals(leftTable)){
-                    return true;
+                if (join){
+                    genSelection.add(preds[i]);
+                }
+//                genSelection.add(preds[i]);
             }
         }
-
-        if (leftTable.equals(left.name) && rightTable.equals(right.name)){
-            return true;
-        }
-        if (leftTable.equals(right.name) && rightTable.equals(left.name)){
-            return true;
-        }
-        return false;
     }
 
 
+    private ArrayList<Pair> processJoinPreds(){
+        Set<Predicate> s = new HashSet<Predicate>();
+        s.addAll(joinPreds);
+        joinPreds.clear();
 
-    private SimpleJoin joinTwoTables(TableInfo left, TableInfo right, SimpleJoin sj){
-        Predicate[] pass;
-        ArrayList<Predicate> joinOR;
-
-        for (ArrayList<Predicate> pred: unPushablePreds){
-            joinOR = new ArrayList<Predicate>();
-            for (Predicate p: pred){
-                if (joinable(left, right, p)){
-                    joinOR.add(p);
-                    //pred.remove(p);
+        boolean flag;
+        for (Predicate p: s){
+            flag = true;
+            for (Predicate match: joinPreds){
+                if (p.getLeft().equals(match.getLeft()) && p.getRight().equals(match.getRight())){
+                    flag = false;
+                }
+                if (p.getRight().equals(match.getLeft()) && p.getLeft().equals(match.getRight())){
+                    flag = false;
                 }
             }
-            if (joinOR.size() != 0){
-                for (Predicate p: joinOR){
-                    pred.remove(p);
-                }
+            if (flag){
+                joinPreds.add(p);
             }
+        }
 
-            if (joinOR.size() != 0){
-                pass = (Predicate[]) joinOR.toArray(new Predicate[joinOR.size()]);
-                if (left == null){
-                    sj = new SimpleJoin(sj, right.getScan(), pass);
-                }
-                else {
-                    sj = new SimpleJoin(left.getScan(), right.getScan(), pass);
+
+
+        HeapFile hf1, hf2;
+        int t1, t2, product;
+        ArrayList<Pair> sort = new ArrayList<Pair>();
+
+        for (Predicate p: joinPreds){
+            t1 = joinMap.get(p.getLeft());
+            t2 = joinMap.get(p.getRight());
+            hf1 = new HeapFile(tables[t1]);
+            hf2 = new HeapFile(tables[t2]);
+            product = hf1.getRecCnt()*hf2.getRecCnt();
+            sort.add(new Pair(product, p, t1, t2));
+        }
+
+        Collections.sort(sort, new Comparator<Pair>() {
+            @Override
+            public int compare(Pair o1, Pair o2) {
+                return o1.product - o2.product;
+            }
+        });
+
+        return sort;
+    }
+
+    private Iterator joinOrdering(){
+        ArrayList<Pair> sort = processJoinPreds();
+        Iterator sj;
+        if (sort.size() == 0){
+            sj = scans[0];
+            for (int i = 1; i< tables.length; i++){
+                sj = new SimpleJoin(sj, scans[i]);
+            }
+            return sj;
+        }
+
+        Pair pair = sort.get(0);
+        sj = new SimpleJoin(scans[pair.t1], scans[pair.t2], pair.p);
+        closescan.add(sj);
+
+        Schema temp;
+        for (int i = 1; i < sort.size(); i++){
+            pair = sort.get(i);
+            for (int j = 0; j < tables.length; j++){
+                temp = Schema.join(sj.getSchema(), scans[j].getSchema());
+                if (pair.p.validate(temp)){
+                    sj = new SimpleJoin(sj, scans[j], pair.p);
+                    availtables.remove(j);
+                    break;
                 }
             }
         }
+
+        int get;
+        while (availtables.size() > 0){
+            get = availtables.remove(0);
+            sj = new SimpleJoin(sj, scans[get]);
+        }
+
         return sj;
     }
 
-    private SimpleJoin joinOrdering(){
-        HashMap<Integer, TableInfo> size2table = new HashMap<Integer, TableInfo>();
-        for (TableInfo t : info.values()) {
-            size2table.put(t.getCount(), t);
-        }
-        //sort by size
-        Integer[] sortedSize = (Integer[]) size2table.keySet().toArray(new Integer[size2table.keySet().size()]);
-        Arrays.sort(sortedSize);
-
-        TableInfo leftTInfo = size2table.get(sortedSize[0]);
-        TableInfo rightTInfo = size2table.get(sortedSize[1]);
-
-        SimpleJoin sj = joinTwoTables(leftTInfo, rightTInfo, null);
-
-        size2table.remove(sortedSize[0]);
-        size2table.remove(sortedSize[1]);
-        joinedTables.add(leftTInfo.name);
-        joinedTables.add(rightTInfo.name);
-
-        int counter = 2;
-        while (size2table.size() != 0){
-            rightTInfo = size2table.get(sortedSize[counter]);
-            counter++;
-            sj = joinTwoTables(null, rightTInfo, sj);
-            joinedTables.add(rightTInfo.name);
-        }
-        return sj;
-
-    }
 
 
     /**
      * Executes the plan and prints applicable output.
      */
     public void execute() {
-
-        //Pushing Selections:
-        pushingSelection();
-
-        Selection finalSel;
         Iterator sj;
-        if (tables.length > 1) {
-            sj = joinOrdering();
-        } else {
-            sj = info.get(tables[0]).getScan();
+        ArrayList<String> availtables = new ArrayList<String>();
+
+        if (preds.length == 0){
+            Schema schema;
+            HeapFile hf;
+            for (int i = 0; i< tables.length; i++){
+                schema = Minibase.SystemCatalog.getSchema(tables[i]);
+                hf = new HeapFile(tables[i]);
+                scans[i] = new FileScan(schema, hf);
+                closescan.add(scans[i]);
+            }
+            sj = scans[0];
+            for (int i = 1; i< tables.length; i++){
+                sj = new SimpleJoin(sj, scans[i]);
+            }
+
+        }
+        else {
+            //Pushing Selections:
+            pushingSelection();
+
+//        Selection finalSel;
+
+            if (tables.length > 1) {
+                sj = joinOrdering();
+            } else {
+                sj = scans[0];
+            }
+
+            if (genSelection.size() > 0) {
+                sj = new Selection(sj, genSelection.get(0));
+//            closescan.add(sj);
+                for (int i = 1; i < genSelection.size(); i++) {
+                    sj = new Selection(sj, genSelection.get(i));
+                }
+            }
         }
 
-        finalSel = new Selection(sj, preds[0]);
-        for (Predicate[] pred : preds) {
-            if(pred.equals(preds[0])) continue;
-            finalSel = new Selection(finalSel, pred);
-        }
-
-        if (kleenestar == false) {
-            Schema schema = finalSel.getSchema();
+        if (projCols.length != 0) {
+            Schema schema = sj.getSchema();
             Integer[] pCols = new Integer[projCols.length];
             for (int i = 0; i < projCols.length; i++) {
                 pCols[i] = schema.fieldNumber(projCols[i]);
             }
-            Projection proj = new Projection(finalSel, pCols);
+            Projection proj = new Projection(sj, pCols);
+            closescan.add(proj);
 
+            if (isExplain){
+                proj.explain(0);
+                System.out.println("");
+
+            }
             proj.execute();
+
         }
         else{
-            finalSel.execute();
+            if (isExplain){
+                sj.explain(0);
+                System.out.println("");
+            }
+            sj.execute();
+
         }
 
-        // print the output message
-        System.out.println("0 rows affected. ");
+        for (Iterator i: closescan){
+            if (i.isOpen()){
+                i.close();
+            }
+        }
+
+
+
+//         print the output message
+//        System.out.println("0 rows affected. ");
 
     } // public void execute()
 

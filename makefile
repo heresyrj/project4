@@ -11,6 +11,7 @@ PROGS = xx
 all: $(PROGS)
 
 compile:src/*/*.java
+	mkdir -p ./bin
 	$(JAVAC) -cp $(CLASSPATH) -d ./bin ./src/*/*.java
 
 xx : compile

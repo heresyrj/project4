@@ -1,0 +1,12 @@
+Group Member:
+Jian Ruan (ruan3@purdue.edu)
+Yao Xiao (xiao80@purdue.edu)
+
+Optimization Approach:
+1. Pushing selection.
+2. Join Ordering. Sort the join predicates based on the product of the join table size. Go through the sorted predicates and join the tables that allows join.
+3. General selection that only can be done after join.
+4. Projection.
+
+Roles of each member:
+Do the project together.

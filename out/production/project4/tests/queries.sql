@@ -16,48 +16,65 @@ CREATE TABLE Grades (gsid INTEGER, gcid INTEGER, points FLOAT);
 CREATE TABLE Foo (a INTEGER, b INTEGER, c INTEGER, d INTEGER, e INTEGER);
 
 CREATE INDEX IX_Age ON Students(Age);
-DROP INDEX IX_Age;
-CREATE INDEX IX_Age ON Students(Age);
 
 
--- INSERT INTO Students VALUES (1, 'Alice', 25.67);
--- INSERT INTO Students VALUES (2, 'Chris', 12.34);
--- INSERT INTO Students VALUES (3, 'Bob', 30.0);
--- INSERT INTO Students VALUES (4, 'Andy', 50.0);
--- INSERT INTO Students VALUES (5, 'Ron', 30.0);
+INSERT INTO Students VALUES (1, 'Alice', 25.67);
+INSERT INTO Students VALUES (2, 'Chris', 12.34);
+INSERT INTO Students VALUES (3, 'Bob', 30.0);
+INSERT INTO Students VALUES (4, 'Andy', 50.0);
+INSERT INTO Students VALUES (5, 'Ron', 30.0);
 
 CREATE INDEX IX_Name ON Students(Name);
 
--- INSERT INTO Courses VALUES (448, 'DB Fun');
--- INSERT INTO Courses VALUES (348, 'Less Cool');
--- INSERT INTO Courses VALUES (542, 'More Fun');
---
--- INSERT INTO Grades VALUES (2, 448, 4.0);
--- INSERT INTO Grades VALUES (3, 348, 2.5);
--- INSERT INTO Grades VALUES (1, 348, 3.1);
--- INSERT INTO Grades VALUES (4, 542, 2.8);
--- INSERT INTO Grades VALUES (5, 542, 3.0);
---
--- INSERT INTO Foo VALUES (1, 2, 8, 4, 5);
--- INSERT INTO Foo VALUES (2, 2, 8, 4, 5);
--- INSERT INTO Foo VALUES (1, 5, 3, 4, 5);
--- INSERT INTO Foo VALUES (1, 4, 8, 5, 5);
--- INSERT INTO Foo VALUES (1, 4, 3, 4, 6);
+INSERT INTO Courses VALUES (448, 'DB Fun');
+INSERT INTO Courses VALUES (348, 'Less Cool');
+INSERT INTO Courses VALUES (542, 'More Fun');
+
+INSERT INTO Grades VALUES (2, 448, 4.0);
+INSERT INTO Grades VALUES (3, 348, 2.5);
+INSERT INTO Grades VALUES (1, 348, 3.1);
+INSERT INTO Grades VALUES (4, 542, 2.8);
+INSERT INTO Grades VALUES (5, 542, 3.0);
+
+INSERT INTO Foo VALUES (1, 2, 8, 4, 5);
+INSERT INTO Foo VALUES (2, 2, 8, 4, 5);
+INSERT INTO Foo VALUES (1, 5, 3, 4, 5);
+INSERT INTO Foo VALUES (1, 4, 8, 5, 5);
+INSERT INTO Foo VALUES (1, 4, 3, 4, 6);
 
 -------------------------------------------------------------------------------
 -- Sample Queries
 
--- SELECT sid, name, points FROM Students, Grades WHERE sid = gsid AND points >= 3.0;
--- SELECT gsid, points FROM Grades WHERE points >= 3.0 OR points <= 2.5;
--- SELECT sid, name, points FROM Students, Grades WHERE sid = gsid AND points >= 3.0 OR sid = gsid AND points <= 2.5;
--- SELECT * FROM Foo WHERE a = 1 and b = 2 or c = 3 and d = 4 and e = 5;
--- SELECT * FROM Students, Grades WHERE sid = gsid AND age = 30.0;
+-- EXPLAIN SELECT  sid FROM Students WHERE name='Bob';
+-- EXPLAIN SELECT sid, name, points FROM Students, Grades WHERE sid = gsid AND points >= 3.0;
+-- EXPLAIN SELECT gsid, points FROM Grades WHERE points >= 3.0 OR points <= 2.5;
+-- EXPLAIN SELECT sid, name, points FROM Students, Grades WHERE sid = gsid AND points >= 3.0 OR sid = gsid AND points <= 2.5;
+-- EXPLAIN SELECT sid, name, points FROM Students, Grades WHERE sid = gsid AND points >= 3.0  OR sid = gsid AND points = 4.0 AND name = 'Chris';
+--
+--
+--
+-- EXPLAIN SELECT sid, name, points, gcid FROM Students, Grades WHERE sid = gsid OR sid = gsid;
+-- EXPLAIN SELECT sid, name, points FROM Students, Grades WHERE sid = gsid AND points >= 3.0 AND gcid = 348 OR sid = gsid AND points <= 2.5;
+--
+--
+-- EXPLAIN SELECT * FROM Foo WHERE a = 1 and b = 2 or c = 3 and d = 4 and e = 5;
+-- EXPLAIN SELECT * FROM Students, Grades WHERE sid = gsid AND age = 30.0;
+--
+-- EXPLAIN SELECT * FROM Students, Grades, Courses, Foo WHERE sid = gsid AND cid = gcid OR sid = gsid AND a = sid;
+-- EXPLAIN SELECT * FROM Students, Grades;
+-- EXPLAIN SELECT sid, gcid FROM Students, Grades;
+
+
+---- Queries not support
+-- EXPLAIN SELECT * FROM Students, Grades, Courses WHERE sid = gsid ;
+EXPLAIN SELECT * FROM Students, Grades WHERE sid  = 1 AND points >= 3.0;
+
 
 STATS
---
--- ------------------------------------------------------------------------------
--- -- Invalid Queries
---
+
+------------------------------------------------------------------------------
+-- Invalid Queries
+
 -- CREATE TABLE Courses (id INTEGER);
 -- CREATE TABLE IX_Age (id INTEGER);
 -- CREATE TABLE Bad (id INTEGER, f FLOAT, id STRING);
@@ -82,6 +99,7 @@ STATS
 -- DELETE Grades WHERE bad = 5;
 -- DELETE Grades WHERE gsid = 'bad';
 --
+--
 -- UPDATE Bad SET Id = 1;
 -- UPDATE Courses SET bad = 1;
 -- UPDATE Courses SET cid = 'bad';
@@ -89,20 +107,20 @@ STATS
 -- SELECT * FROM Grades, Bad;
 -- SELECT sid, bad FROM Grades, Students;
 -- SELECT * FROM Foo, Grades WHERE a = 1 OR points = 0.0 OR bad = 5;
---
+
 -- ------------------------------------------------------------------------------
 -- -- Odds and Ends
---
--- DESCRIBE Students;
---
--- UPDATE Students SET sid = 5 WHERE name = 'Chris';
---
--- DELETE Students WHERE name = 'Chris';
---
--- DROP INDEX IX_Age;
--- DROP TABLE Students;
--- DROP TABLE Courses;
--- DROP TABLE Grades;
--- DROP TABLE Foo;
+
+DESCRIBE Students;
+
+UPDATE Students SET sid = 5 WHERE name = 'Chris';
+
+DELETE Students WHERE name = 'Chris';
+
+DROP INDEX IX_Age;
+DROP TABLE Students;
+DROP TABLE Courses;
+DROP TABLE Grades;
+DROP TABLE Foo;
 
 QUIT
